@@ -10,6 +10,7 @@ SRC_PATH = Path(__file__).resolve().parents[1]
 if str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
 
+from execution.paper_trader import execute_paper_trade
 from services.market_service import load_market_overview
 from services.trade_history_service import load_trade_history, summarize_trade_history
 
@@ -93,7 +94,22 @@ if "overview" in st.session_state:
     st.write(f"Durchschnittlicher Schlusskurs: **{overview['average_close']:.2f}**")
     st.write(f"Aktuelles Basissignal: **{overview['signal']}**")
 
-    # ab hier laden wir die gespeicherte Trade-Historie aus der CSV
+    save_trade = st.button("Signal als Paper Trade speichern", width="stretch")
+
+    if save_trade:
+        paper_trade_result = execute_paper_trade(
+            overview["signal"],
+            overview["raw_ticker"]
+        )
+        st.success(
+            f'Paper Trade gespeichert: '
+            f'{paper_trade_result["instrument"]} | '
+            f'{paper_trade_result["signal"]} | '
+            f'{paper_trade_result["last_price"]:.2f}'
+        )
+
+    # hier laden wir die gespeicherte Trade-Historie immer,
+    # damit sie auch ohne frischen Button-Klick sichtbar bleibt
     trade_df = load_trade_history()
     trade_summary = summarize_trade_history(trade_df)
 
