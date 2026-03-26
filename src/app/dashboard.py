@@ -11,6 +11,7 @@ SRC_PATH = Path(__file__).resolve().parents[1]
 if str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
 
+from services.auto_trade_service import load_runtime_state
 from services.pnl_service import calculate_pnl_summary
 from execution.paper_trader import execute_paper_trade
 from services.market_service import load_market_overview
@@ -209,6 +210,9 @@ if "overview" in st.session_state:
             f"{paper_trade_result['last_price']:.2f}"
         )
 
+
+    runtime_state = load_runtime_state()
+
     trade_df = load_trade_history()
     trade_summary = summarize_trade_history(trade_df)
 
@@ -217,6 +221,31 @@ if "overview" in st.session_state:
         current_price=overview["last_price"],
         position_size=0.01
     )
+
+    st.subheader("Worker-Status")
+
+    worker_position_status = runtime_state["position_status"]
+    worker_last_signal = runtime_state["last_signal"]
+    worker_entry_price = runtime_state["entry_price"]
+    worker_last_trade_timestamp = runtime_state["last_trade_timestamp"]
+
+    worker_col1, worker_col2, worker_col3, worker_col4 = st.columns(4)
+
+    worker_col1.metric("Bot-Status", worker_position_status)
+    worker_col2.metric("Letztes Signal", str(worker_last_signal))
+    worker_col3.metric(
+        "Entry-Preis",
+        "-" if worker_entry_price is None else f"{float(worker_entry_price):.2f}"
+    )
+    worker_col4.metric(
+        "Letzter Auto-Trade",
+        "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp)
+    )
+    
+    if worker_position_status == "LONG":
+        st.write("Der Worker hält aktuell eine offene Long-Position.")
+    else:
+        st.write("Der Worker hält aktuell keine offene Position.")
 
     st.subheader("Paper-Trade PnL")
 
