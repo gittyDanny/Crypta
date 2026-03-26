@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import streamlit as st
 import plotly.graph_objects as go
+import streamlit as st
 
 # hier fügen wir den src-Ordner zum Python-Pfad hinzu,
 # damit Imports aus services, connectors usw. funktionieren
@@ -11,9 +11,11 @@ SRC_PATH = Path(__file__).resolve().parents[1]
 if str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
 
+from services.pnl_service import calculate_pnl_summary
 from execution.paper_trader import execute_paper_trade
 from services.market_service import load_market_overview
 from services.trade_history_service import load_trade_history, summarize_trade_history
+
 
 def render_signal_box(signal):
     # hier ordnen wir jedem Signal eine Farbe und einen kleinen Beschreibungstext zu
@@ -56,6 +58,7 @@ def render_signal_box(signal):
         """,
         unsafe_allow_html=True
     )
+
 
 st.set_page_config(page_title="Crypta", layout="wide")
 
@@ -108,8 +111,8 @@ if "overview" in st.session_state:
     )
 
     chart_df = candles_df.sort_values("timestamp").copy()
-    volume_colors = []
 
+    volume_colors = []
     for _, row in chart_df.iterrows():
         if row["close"] >= row["open"]:
             volume_colors.append("#22c55e")
@@ -134,6 +137,7 @@ if "overview" in st.session_state:
         template="plotly_dark",
         height=300
     )
+
     candlestick_fig = go.Figure(
         data=[
             go.Candlestick(
@@ -154,7 +158,7 @@ if "overview" in st.session_state:
         xaxis_rangeslider_visible=False,
         template="plotly_dark",
         height=500
-    )        
+    )
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -166,10 +170,10 @@ if "overview" in st.session_state:
     render_signal_box(overview["signal"])
 
     st.subheader("Kerzenchart")
-    st.plotly_chart(candlestick_fig, width="stretch")
+    st.plotly_chart(candlestick_fig, use_container_width=True)
 
     st.subheader("Volumen")
-    st.plotly_chart(volume_fig, width="stretch")
+    st.plotly_chart(volume_fig, use_container_width=True)
 
     st.subheader("Schlusskurse")
     st.line_chart(
@@ -177,13 +181,11 @@ if "overview" in st.session_state:
         width="stretch"
     )
 
-    st.subheader("Kerzenchart")
-    st.plotly_chart(candlestick_fig)
-
-    st.subheader("Schlusskurse")
-    st.line_chart(
-        chart_df.set_index("timestamp")["close"],
-        width="stretch"
+    st.subheader("Candles")
+    st.dataframe(
+        candles_df.sort_values("timestamp", ascending=False),
+        width="stretch",
+        hide_index=True
     )
 
     st.subheader("Kurze Einordnung")
@@ -201,35 +203,104 @@ if "overview" in st.session_state:
             overview["raw_ticker"]
         )
         st.success(
-            f'Paper Trade gespeichert: '
-            f'{paper_trade_result["instrument"]} | '
-            f'{paper_trade_result["signal"]} | '
-            f'{paper_trade_result["last_price"]:.2f}'
+            f"Paper Trade gespeichert: "
+            f"{paper_trade_result['instrument']} | "
+            f"{paper_trade_result['signal']} | "
+            f"{paper_trade_result['last_price']:.2f}"
         )
 
-    # hier laden wir die gespeicherte Trade-Historie immer,
-    # damit sie auch ohne frischen Button-Klick sichtbar bleibt
     trade_df = load_trade_history()
     trade_summary = summarize_trade_history(trade_df)
 
+    pnl_summary = calculate_pnl_summary(
+        trade_df,
+        current_price=overview["last_price"],
+        position_size=0.01
+    )
+
+    st.subheader("Paper-Trade PnL")
+
+    realized_pnl = pnl_summary["realized_pnl"]
+    unrealized_pnl = pnl_summary["unrealized_pnl"]
+    total_pnl = pnl_summary["total_pnl"]
+    position_status = pnl_summary["position_status"]
+    position_size = pnl_summary["position_size"]
+    closed_trades = pnl_summary["closed_trades"]
+    entry_price = pnl_summary["entry_price"]
+    trade_log_df = pnl_summary["trade_log_df"]
+
+    pnl_col1, pnl_col2, pnl_col3, pnl_col4 = st.columns(4)
+
+    pnl_col1.metric("Realisiert", f"{realized_pnl:.2f} USDT")
+    pnl_col2.metric("Offen", f"{unrealized_pnl:.2f} USDT")
+    pnl_col3.metric("Gesamt", f"{total_pnl:.2f} USDT")
+    pnl_col4.metric("Position", position_status)
+
+    st.write(f"Positionsgröße: **{position_size} BTC**")
+    st.write(f"Geschlossene Trades: **{closed_trades}**")
+
+    if entry_price is not None:
+        st.write(f"Aktueller Entry-Preis der offenen Position: **{entry_price:.2f}**")
+
+    if not trade_log_df.empty:
+        pnl_chart_df = trade_log_df.sort_values("exit_timestamp").copy()
+
+        pnl_fig = go.Figure(
+            data=[
+                go.Scatter(
+                    x=pnl_chart_df["exit_timestamp"],
+                    y=pnl_chart_df["cumulative_pnl"],
+                    mode="lines+markers",
+                    name="Kumulative PnL"
+                )
+            ]
+        )
+
+        pnl_fig.update_layout(
+            title="Kumulative PnL",
+            xaxis_title="Exit-Zeitpunkt",
+            yaxis_title="USDT",
+            template="plotly_dark",
+            height=350
+        )
+
+        st.write("**PnL-Verlauf:**")
+        st.plotly_chart(pnl_fig, use_container_width=True)
+
+        st.write("**Abgeschlossene Trades:**")
+        st.dataframe(
+            trade_log_df.sort_values("exit_timestamp", ascending=False),
+            width="stretch",
+            hide_index=True
+        )
+
     st.subheader("Paper-Trade-Historie")
+
+    total_trades = trade_summary["total_trades"]
+    buy_count = trade_summary["buy_count"]
+    sell_count = trade_summary["sell_count"]
+    hold_count = trade_summary["hold_count"]
+    latest_trade = trade_summary["latest_trade"]
 
     hist_col1, hist_col2, hist_col3, hist_col4 = st.columns(4)
 
-    hist_col1.metric("Trades gesamt", trade_summary["total_trades"])
-    hist_col2.metric("BUY", trade_summary["buy_count"])
-    hist_col3.metric("SELL", trade_summary["sell_count"])
-    hist_col4.metric("HOLD", trade_summary["hold_count"])
+    hist_col1.metric("Trades gesamt", total_trades)
+    hist_col2.metric("BUY", buy_count)
+    hist_col3.metric("SELL", sell_count)
+    hist_col4.metric("HOLD", hold_count)
 
-    if trade_summary["latest_trade"] is not None:
-        latest_trade = trade_summary["latest_trade"]
+    if latest_trade is not None:
+        latest_timestamp = latest_trade["timestamp"]
+        latest_instrument = latest_trade["instrument"]
+        latest_signal = latest_trade["signal"]
+        latest_last_price = float(latest_trade["last_price"])
 
         st.write("**Letzter gespeicherter Trade:**")
         st.write(
-            f'{latest_trade["timestamp"]} | '
-            f'{latest_trade["instrument"]} | '
-            f'{latest_trade["signal"]} | '
-            f'{latest_trade["last_price"]:.2f}'
+            f"{latest_timestamp} | "
+            f"{latest_instrument} | "
+            f"{latest_signal} | "
+            f"{latest_last_price:.2f}"
         )
 
     if trade_df.empty:
