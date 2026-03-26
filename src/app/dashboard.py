@@ -15,6 +15,47 @@ from execution.paper_trader import execute_paper_trade
 from services.market_service import load_market_overview
 from services.trade_history_service import load_trade_history, summarize_trade_history
 
+def render_signal_box(signal):
+    # hier ordnen wir jedem Signal eine Farbe und einen kleinen Beschreibungstext zu
+    if signal == "BUY":
+        background_color = "#123524"
+        border_color = "#22c55e"
+        text_color = "#86efac"
+        description = "Einfaches Kaufsignal"
+    elif signal == "SELL":
+        background_color = "#3b1219"
+        border_color = "#ef4444"
+        text_color = "#fca5a5"
+        description = "Einfaches Verkaufssignal"
+    else:
+        background_color = "#3a2f12"
+        border_color = "#f59e0b"
+        text_color = "#fcd34d"
+        description = "Neutrales Haltesignal"
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color: {background_color};
+            border: 2px solid {border_color};
+            border-radius: 12px;
+            padding: 18px;
+            margin-top: 10px;
+            margin-bottom: 20px;
+        ">
+            <div style="font-size: 14px; color: {text_color}; opacity: 0.9;">
+                Aktuelles Signal
+            </div>
+            <div style="font-size: 34px; font-weight: bold; color: {text_color}; margin-top: 8px;">
+                {signal}
+            </div>
+            <div style="font-size: 16px; color: {text_color}; margin-top: 8px;">
+                {description}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 st.set_page_config(page_title="Crypta", layout="wide")
 
@@ -95,6 +136,8 @@ if "overview" in st.session_state:
     col2.metric("Aktueller Preis", f'{overview["last_price"]:.2f}')
     col3.metric("Preisveränderung", f'{overview["simple_return"]:.2%}')
     col4.metric("Signal", overview["signal"])
+    
+    render_signal_box(overview["signal"])
 
     st.subheader("Schlusskurse")
     st.line_chart(
