@@ -153,6 +153,7 @@ venv.bak/
 
 # mkdocs documentation
 /site
+paper_trades.csv
 
 # mypy
 .mypy_cache/
