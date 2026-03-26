@@ -154,7 +154,7 @@ venv.bak/
 # mkdocs documentation
 /site
 paper_trades.csv
-
+runtime_state.json
 # mypy
 .mypy_cache/
 .dmypy.json
