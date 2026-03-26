@@ -108,6 +108,32 @@ if "overview" in st.session_state:
     )
 
     chart_df = candles_df.sort_values("timestamp").copy()
+    volume_colors = []
+
+    for _, row in chart_df.iterrows():
+        if row["close"] >= row["open"]:
+            volume_colors.append("#22c55e")
+        else:
+            volume_colors.append("#ef4444")
+
+    volume_fig = go.Figure(
+        data=[
+            go.Bar(
+                x=chart_df["timestamp"],
+                y=chart_df["volume"],
+                name="Volumen",
+                marker_color=volume_colors
+            )
+        ]
+    )
+
+    volume_fig.update_layout(
+        title="Volumen",
+        xaxis_title="Zeit",
+        yaxis_title="BTC Volumen",
+        template="plotly_dark",
+        height=300
+    )
     candlestick_fig = go.Figure(
         data=[
             go.Candlestick(
@@ -136,8 +162,14 @@ if "overview" in st.session_state:
     col2.metric("Aktueller Preis", f'{overview["last_price"]:.2f}')
     col3.metric("Preisveränderung", f'{overview["simple_return"]:.2%}')
     col4.metric("Signal", overview["signal"])
-    
+
     render_signal_box(overview["signal"])
+
+    st.subheader("Kerzenchart")
+    st.plotly_chart(candlestick_fig, width="stretch")
+
+    st.subheader("Volumen")
+    st.plotly_chart(volume_fig, width="stretch")
 
     st.subheader("Schlusskurse")
     st.line_chart(
