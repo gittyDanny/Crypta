@@ -3,6 +3,7 @@ from connectors.okx_client import OKXClient
 from utils.logger import setup_logger
 from analysis.technical import calculate_simple_return, calculate_average_close
 from strategy.signal_engine import generate_signal
+from execution.paper_trader import execute_paper_trade
 
 
 def main():
@@ -32,6 +33,12 @@ def main():
         print(f"Preisveränderung über die 5 Candles: {simple_return:.4%}")
         print(f"Durchschnittlicher Schlusskurs: {average_close:.2f}")
         print(f"Aktuelles Signal: {signal}")
+
+        paper_trade_result = execute_paper_trade(signal, ticker_data)
+        logger.info("Paper Trade wurde gespeichert")
+
+        print("\nPaper Trade:")
+        print(paper_trade_result)
 
     except Exception as e:
         logger.error(f"Fehler beim Laden der OKX-Daten: {e}")
