@@ -2,6 +2,7 @@ from config.settings import Settings
 from connectors.okx_client import OKXClient
 from utils.logger import setup_logger
 from analysis.technical import calculate_simple_return, calculate_average_close
+from strategy.signal_engine import generate_signal
 
 
 def main():
@@ -25,10 +26,12 @@ def main():
 
         simple_return = calculate_simple_return(candles)
         average_close = calculate_average_close(candles)
+        signal = generate_signal(candles, simple_return, average_close)
 
         print("\nEinfache Analyse:")
         print(f"Preisveränderung über die 5 Candles: {simple_return:.4%}")
         print(f"Durchschnittlicher Schlusskurs: {average_close:.2f}")
+        print(f"Aktuelles Signal: {signal}")
 
     except Exception as e:
         logger.error(f"Fehler beim Laden der OKX-Daten: {e}")
