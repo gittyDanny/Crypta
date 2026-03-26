@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 # hier fügen wir den src-Ordner zum Python-Pfad hinzu,
 # damit Imports aus services, connectors usw. funktionieren
@@ -66,6 +67,27 @@ if "overview" in st.session_state:
     )
 
     chart_df = candles_df.sort_values("timestamp").copy()
+    candlestick_fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=chart_df["timestamp"],
+                open=chart_df["open"],
+                high=chart_df["high"],
+                low=chart_df["low"],
+                close=chart_df["close"],
+                name="Candles"
+            )
+        ]
+    )
+
+    candlestick_fig.update_layout(
+        title="Kerzenchart",
+        xaxis_title="Zeit",
+        yaxis_title="Preis",
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=500
+    )        
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -80,11 +102,13 @@ if "overview" in st.session_state:
         width="stretch"
     )
 
-    st.subheader("Candles")
-    st.dataframe(
-        candles_df.sort_values("timestamp", ascending=False),
-        width="stretch",
-        hide_index=True
+    st.subheader("Kerzenchart")
+    st.plotly_chart(candlestick_fig)
+
+    st.subheader("Schlusskurse")
+    st.line_chart(
+        chart_df.set_index("timestamp")["close"],
+        width="stretch"
     )
 
     st.subheader("Kurze Einordnung")
