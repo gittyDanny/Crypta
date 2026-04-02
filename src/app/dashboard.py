@@ -210,10 +210,30 @@ def render_dashboard_body(overview):
     )
 
     st.subheader("Kurze Einordnung")
-    latest_close = overview["candles"][0]["close"]
-    st.write(f"Letzter Schlusskurs: **{latest_close:.2f}**")
-    st.write(f"Durchschnittlicher Schlusskurs: **{overview['average_close']:.2f}**")
+
+    signal_details = overview.get("signal_details", {})
+
+    latest_close = signal_details.get("latest_close")
+    average_close = signal_details.get("average_close", overview["average_close"])
+    simple_return = signal_details.get("simple_return", overview["simple_return"])
+    signal_reason = signal_details.get("reason", "Keine Begründung verfügbar.")
+    close_vs_average = signal_details.get("close_vs_average", "UNBEKANNT")
+    return_direction = signal_details.get("return_direction", "UNBEKANNT")
+
+    if latest_close is not None:
+        st.write(f"Letzter Schlusskurs: **{latest_close:.2f}**")
+    else:
+        st.write("Letzter Schlusskurs: **-**")
+
+    st.write(f"Durchschnittlicher Schlusskurs: **{average_close:.2f}**")
+    st.write(f"Preisveränderung: **{simple_return:.2%}**")
     st.write(f"Aktuelles Basissignal: **{overview['signal']}**")
+
+    detail_col1, detail_col2 = st.columns(2)
+    detail_col1.write(f"Close vs. Durchschnitt: **{close_vs_average}**")
+    detail_col2.write(f"Return-Richtung: **{return_direction}**")
+
+    st.info(signal_reason)
 
     save_trade = st.button(
         "Signal als Paper Trade speichern",
