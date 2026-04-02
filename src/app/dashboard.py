@@ -61,49 +61,9 @@ def render_signal_box(signal):
     )
 
 
-st.set_page_config(page_title="Crypta", layout="wide")
-
-st.title("Crypta")
-st.caption("Modulares Bitcoin Analyse-Dashboard")
-
-with st.sidebar:
-    st.header("Einstellungen")
-
-    instrument = st.selectbox(
-        "Instrument",
-        ["BTC-USDT", "ETH-USDT"],
-        index=0
-    )
-
-    bar = st.selectbox(
-        "Timeframe",
-        ["15m", "1H", "4H", "1D"],
-        index=1
-    )
-
-    candle_limit = st.slider(
-        "Anzahl Candles",
-        min_value=5,
-        max_value=100,
-        value=24,
-        step=1
-    )
-
-    run_analysis = st.button("Analyse starten", width="stretch")
-
-if run_analysis or "overview" not in st.session_state:
-    try:
-        st.session_state["overview"] = load_market_overview(
-            inst_id=instrument,
-            bar=bar,
-            limit=str(candle_limit)
-        )
-    except Exception as e:
-        st.error(f"Fehler beim Laden der Marktdaten: {e}")
-
-if "overview" in st.session_state:
-    overview = st.session_state["overview"]
-
+def render_dashboard_body(overview):
+    # hier wandeln wir die Candle-Liste in ein DataFrame um,
+    # damit wir später Charts und Tabellen einfacher bauen können
     candles_df = pd.DataFrame(overview["candles"])
 
     candles_df["timestamp"] = pd.to_datetime(
@@ -113,7 +73,10 @@ if "overview" in st.session_state:
 
     chart_df = candles_df.sort_values("timestamp").copy()
 
+    # hier färben wir die Volumenbalken grün oder rot,
+    # je nachdem ob die Kerze bullisch oder bärisch war
     volume_colors = []
+
     for _, row in chart_df.iterrows():
         if row["close"] >= row["open"]:
             volume_colors.append("#22c55e")
@@ -152,6 +115,26 @@ if "overview" in st.session_state:
         ]
     )
 
+    # hier holen wir optional die Forecast-Punkte rein,
+    # falls market_service sie schon mitliefert
+    forecast_df = pd.DataFrame(overview.get("forecast_points", []))
+
+    if not forecast_df.empty:
+        forecast_df["timestamp"] = pd.to_datetime(
+            forecast_df["timestamp"].astype("int64"),
+            unit="ms"
+        )
+
+        candlestick_fig.add_trace(
+            go.Scatter(
+                x=forecast_df["timestamp"],
+                y=forecast_df["close"],
+                mode="lines+markers",
+                name="Forecast",
+                line=dict(width=2, dash="dash")
+            )
+        )
+
     candlestick_fig.update_layout(
         title="Kerzenchart",
         xaxis_title="Zeit",
@@ -162,7 +145,6 @@ if "overview" in st.session_state:
     )
 
     col1, col2, col3, col4 = st.columns(4)
-
     col1.metric("Instrument", overview["instrument"])
     col2.metric("Aktueller Preis", f'{overview["last_price"]:.2f}')
     col3.metric("Preisveränderung", f'{overview["simple_return"]:.2%}')
@@ -173,14 +155,52 @@ if "overview" in st.session_state:
     st.subheader("Kerzenchart")
     st.plotly_chart(candlestick_fig, use_container_width=True)
 
+    if not forecast_df.empty:
+        st.caption(
+            "Forecast = einfache lineare Trendprojektion der letzten Schlusskurse, "
+            "keine echte Preisvorhersage."
+        )
+
     st.subheader("Volumen")
     st.plotly_chart(volume_fig, use_container_width=True)
 
-    st.subheader("Schlusskurse")
-    st.line_chart(
-        chart_df.set_index("timestamp")["close"],
-        width="stretch"
+    # hier zeigen wir unter dem Kerzenchart noch die Schlusskurse,
+    # und falls Forecast-Daten da sind, hängen wir diese als zweite Linie an
+    st.subheader("Schlusskurse + Forecast")
+
+    close_fig = go.Figure()
+
+    close_fig.add_trace(
+        go.Scatter(
+            x=chart_df["timestamp"],
+            y=chart_df["close"],
+            mode="lines",
+            name="Real Close"
+        )
     )
+
+    if not forecast_df.empty:
+        forecast_only_df = forecast_df.iloc[1:].copy()
+
+        close_fig.add_trace(
+            go.Scatter(
+                x=forecast_only_df["timestamp"],
+                y=forecast_only_df["close"],
+                mode="lines+markers",
+                name="Forecast",
+                line=dict(width=2, dash="dash")
+            )
+        )
+
+    close_fig.update_layout(
+        title="Schlusskurse + Forecast",
+        xaxis_title="Zeit",
+        yaxis_title="Preis",
+        template="plotly_dark",
+        height=350
+    )
+
+    st.plotly_chart(close_fig, use_container_width=True)
 
     st.subheader("Candles")
     st.dataframe(
@@ -191,18 +211,22 @@ if "overview" in st.session_state:
 
     st.subheader("Kurze Einordnung")
     latest_close = overview["candles"][0]["close"]
-
     st.write(f"Letzter Schlusskurs: **{latest_close:.2f}**")
     st.write(f"Durchschnittlicher Schlusskurs: **{overview['average_close']:.2f}**")
     st.write(f"Aktuelles Basissignal: **{overview['signal']}**")
 
-    save_trade = st.button("Signal als Paper Trade speichern", width="stretch")
+    save_trade = st.button(
+        "Signal als Paper Trade speichern",
+        width="stretch",
+        key="save_paper_trade_button"
+    )
 
     if save_trade:
         paper_trade_result = execute_paper_trade(
             overview["signal"],
             overview["raw_ticker"]
         )
+
         st.success(
             f"Paper Trade gespeichert: "
             f"{paper_trade_result['instrument']} | "
@@ -210,9 +234,7 @@ if "overview" in st.session_state:
             f"{paper_trade_result['last_price']:.2f}"
         )
 
-
     runtime_state = load_runtime_state()
-
     trade_df = load_trade_history()
     trade_summary = summarize_trade_history(trade_df)
 
@@ -230,7 +252,6 @@ if "overview" in st.session_state:
     worker_last_trade_timestamp = runtime_state["last_trade_timestamp"]
 
     worker_col1, worker_col2, worker_col3, worker_col4 = st.columns(4)
-
     worker_col1.metric("Bot-Status", worker_position_status)
     worker_col2.metric("Letztes Signal", str(worker_last_signal))
     worker_col3.metric(
@@ -241,7 +262,7 @@ if "overview" in st.session_state:
         "Letzter Auto-Trade",
         "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp)
     )
-    
+
     if worker_position_status == "LONG":
         st.write("Der Worker hält aktuell eine offene Long-Position.")
     else:
@@ -259,7 +280,6 @@ if "overview" in st.session_state:
     trade_log_df = pnl_summary["trade_log_df"]
 
     pnl_col1, pnl_col2, pnl_col3, pnl_col4 = st.columns(4)
-
     pnl_col1.metric("Realisiert", f"{realized_pnl:.2f} USDT")
     pnl_col2.metric("Offen", f"{unrealized_pnl:.2f} USDT")
     pnl_col3.metric("Gesamt", f"{total_pnl:.2f} USDT")
@@ -312,7 +332,6 @@ if "overview" in st.session_state:
     latest_trade = trade_summary["latest_trade"]
 
     hist_col1, hist_col2, hist_col3, hist_col4 = st.columns(4)
-
     hist_col1.metric("Trades gesamt", total_trades)
     hist_col2.metric("BUY", buy_count)
     hist_col3.metric("SELL", sell_count)
@@ -340,3 +359,81 @@ if "overview" in st.session_state:
             width="stretch",
             hide_index=True
         )
+
+
+st.set_page_config(page_title="Crypta", layout="wide")
+
+st.title("Crypta")
+st.caption("Modulares Bitcoin Analyse-Dashboard")
+
+with st.sidebar:
+    st.header("Einstellungen")
+
+    instrument = st.selectbox(
+        "Instrument",
+        ["BTC-USDT", "ETH-USDT"],
+        index=0
+    )
+
+    bar = st.selectbox(
+        "Timeframe",
+        ["15m", "1H", "4H", "1D"],
+        index=1
+    )
+
+    candle_limit = st.slider(
+        "Anzahl Candles",
+        min_value=5,
+        max_value=100,
+        value=24,
+        step=1
+    )
+
+    run_analysis = st.button("Analyse starten", width="stretch")
+
+    live_mode = st.toggle("Live-Aktualisierung", value=True)
+
+    refresh_seconds = st.slider(
+        "Refresh alle Sekunden",
+        min_value=5,
+        max_value=60,
+        value=10,
+        step=5,
+        disabled=not live_mode,
+    )
+
+refresh_value = f"{refresh_seconds}s" if live_mode else None
+
+
+def load_current_overview():
+    # hier kapseln wir den Ladeaufruf,
+    # damit wir denselben Code für Button und Live-Refresh benutzen
+    return load_market_overview(
+        inst_id=instrument,
+        bar=bar,
+        limit=str(candle_limit)
+    )
+
+
+@st.fragment(run_every=refresh_value)
+def render_live_dashboard():
+    try:
+        overview = load_current_overview()
+        st.session_state["overview"] = overview
+    except Exception as e:
+        st.error(f"Fehler beim Laden der Marktdaten: {e}")
+        return
+
+    render_dashboard_body(overview)
+
+
+if run_analysis or "overview" not in st.session_state:
+    try:
+        st.session_state["overview"] = load_current_overview()
+    except Exception as e:
+        st.error(f"Fehler beim Laden der Marktdaten: {e}")
+
+if live_mode:
+    render_live_dashboard()
+elif "overview" in st.session_state:
+    render_dashboard_body(st.session_state["overview"])
