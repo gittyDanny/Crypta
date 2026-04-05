@@ -227,6 +227,7 @@ def render_forecast_accuracy(overview):
     st.subheader("Forecast Accuracy")
 
     accuracy_summary = overview.get("forecast_accuracy_summary", {})
+    accuracy_by_step = overview.get("forecast_accuracy_by_step", [])
     recent_forecast_evaluations = overview.get("recent_forecast_evaluations", [])
 
     total_count = accuracy_summary.get("total_count", 0)
@@ -245,6 +246,17 @@ def render_forecast_accuracy(overview):
 
     if last_abs_error is not None:
         st.write(f"Letzter absoluter Fehler: **{last_abs_error:.2f}**")
+
+    with st.expander("Accuracy pro Forecast-Schritt", expanded=True):
+        if len(accuracy_by_step) == 0:
+            st.info("Es gibt noch keine Schritt-Auswertung.")
+        else:
+            step_df = pd.DataFrame(accuracy_by_step)
+            st.dataframe(
+                step_df,
+                width="stretch",
+                hide_index=True
+            )
 
     with st.expander("Letzte Forecast-Auswertungen", expanded=False):
         if len(recent_forecast_evaluations) == 0:

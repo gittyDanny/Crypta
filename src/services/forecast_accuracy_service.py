@@ -83,6 +83,18 @@ def _save_forecast_history_df(df):
     sorted_df.to_csv(path, index=False)
 
 
+def _filter_history_df(history_df, inst_id=None, bar=None):
+    filtered_df = history_df.copy()
+
+    if inst_id is not None:
+        filtered_df = filtered_df[filtered_df["instrument"] == inst_id]
+
+    if bar is not None:
+        filtered_df = filtered_df[filtered_df["bar"] == bar]
+
+    return filtered_df
+
+
 def store_forecast_snapshot(inst_id, bar, forecast_points):
     # hier speichern wir nur die echten Zukunftspunkte,
     # also nicht den ersten Punkt, der nur der aktuelle Anker ist
@@ -214,22 +226,7 @@ def reconcile_forecasts_with_actuals(inst_id, bar, candles):
 
 def build_forecast_accuracy_summary(inst_id=None, bar=None):
     history_df = _load_forecast_history_df()
-
-    if history_df.empty:
-        return {
-            "total_count": 0,
-            "evaluated_count": 0,
-            "pending_count": 0,
-            "mae": None,
-            "mape": None,
-            "last_abs_error": None,
-        }
-
-    if inst_id is not None:
-        history_df = history_df[history_df["instrument"] == inst_id]
-
-    if bar is not None:
-        history_df = history_df[history_df["bar"] == bar]
+    history_df = _filter_history_df(history_df, inst_id=inst_id, bar=bar)
 
     if history_df.empty:
         return {
@@ -264,17 +261,63 @@ def build_forecast_accuracy_summary(inst_id=None, bar=None):
     }
 
 
-def load_recent_forecast_evaluations(inst_id=None, bar=None, limit=10):
+def build_forecast_accuracy_by_step(inst_id=None, bar=None):
+    # hier zerlegen wir die Accuracy zusätzlich nach Forecast-Schritten,
+    # damit man z. B. Schritt 1 direkt mit Schritt 5 vergleichen kann
     history_df = _load_forecast_history_df()
+    history_df = _filter_history_df(history_df, inst_id=inst_id, bar=bar)
 
     if history_df.empty:
         return []
 
-    if inst_id is not None:
-        history_df = history_df[history_df["instrument"] == inst_id]
+    step_values = history_df["step_ahead"].dropna()
 
-    if bar is not None:
-        history_df = history_df[history_df["bar"] == bar]
+    if step_values.empty:
+        return []
+
+    max_step = int(step_values.max())
+    step_rows = []
+
+    for step in range(1, max_step + 1):
+        step_df = history_df[history_df["step_ahead"] == step].copy()
+
+        if step_df.empty:
+            continue
+
+        evaluated_df = step_df[step_df["status"] == "EVALUATED"].copy()
+        pending_df = step_df[step_df["status"] == "PENDING"].copy()
+
+        if evaluated_df.empty:
+            mae = None
+            mape = None
+            last_abs_error = None
+        else:
+            evaluated_df = evaluated_df.sort_values("target_timestamp", ascending=False)
+            mae = round(float(evaluated_df["abs_error"].mean()), 2)
+            mape = round(float(evaluated_df["abs_error_pct"].mean()), 2)
+            last_abs_error = round(float(evaluated_df.iloc[0]["abs_error"]), 2)
+
+        step_rows.append(
+            {
+                "Schritt": step,
+                "Gesamt": int(len(step_df)),
+                "Ausgewertet": int(len(evaluated_df)),
+                "Offen": int(len(pending_df)),
+                "MAE": mae,
+                "MAPE %": mape,
+                "Letzter absoluter Fehler": last_abs_error,
+            }
+        )
+
+    return step_rows
+
+
+def load_recent_forecast_evaluations(inst_id=None, bar=None, limit=10):
+    history_df = _load_forecast_history_df()
+    history_df = _filter_history_df(history_df, inst_id=inst_id, bar=bar)
+
+    if history_df.empty:
+        return []
 
     evaluated_df = history_df[history_df["status"] == "EVALUATED"].copy()
 
@@ -282,8 +325,8 @@ def load_recent_forecast_evaluations(inst_id=None, bar=None, limit=10):
         return []
 
     evaluated_df = evaluated_df.sort_values(
-        "target_timestamp",
-        ascending=False
+        ["target_timestamp", "step_ahead"],
+        ascending=[False, True]
     ).head(limit)
 
     evaluated_df["forecast_origin_time"] = pd.to_datetime(

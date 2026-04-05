@@ -2,6 +2,7 @@ from analysis.forecast import build_linear_forecast
 from analysis.technical import calculate_average_close, calculate_simple_return
 from connectors.okx_client import OKXClient
 from services.forecast_accuracy_service import (
+    build_forecast_accuracy_by_step,
     build_forecast_accuracy_summary,
     load_recent_forecast_evaluations,
     reconcile_forecasts_with_actuals,
@@ -44,6 +45,11 @@ def load_market_overview(inst_id="BTC-USDT", bar="1H", limit="24"):
         bar=bar,
     )
 
+    forecast_accuracy_by_step = build_forecast_accuracy_by_step(
+        inst_id=inst_id,
+        bar=bar,
+    )
+
     recent_forecast_evaluations = load_recent_forecast_evaluations(
         inst_id=inst_id,
         bar=bar,
@@ -65,6 +71,7 @@ def load_market_overview(inst_id="BTC-USDT", bar="1H", limit="24"):
         "candles": candles,
         "forecast_points": forecast_points,
         "forecast_accuracy_summary": forecast_accuracy_summary,
+        "forecast_accuracy_by_step": forecast_accuracy_by_step,
         "recent_forecast_evaluations": recent_forecast_evaluations,
         "raw_ticker": ticker_data,
     }
