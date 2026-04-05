@@ -6,6 +6,15 @@ __pycache__/
 # C extensions
 *.so
 
+.venv/
+__pycache__/
+*.pyc
+
+data/
+runtime_state.json
+paper_trades.csv
+
+
 # Distribution / packaging
 .Python
 build/
