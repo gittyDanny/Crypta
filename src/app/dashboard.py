@@ -61,9 +61,9 @@ def render_signal_box(signal):
     )
 
 
-def render_dashboard_body(overview):
-    # hier wandeln wir die Candle-Liste in ein DataFrame um,
-    # damit wir Charts und Tabellen einfacher bauen können
+def build_chart_dataframes(overview):
+    # hier wandeln wir die Candle-Liste in DataFrames um,
+    # damit wir danach Charts und Tabellen einfacher bauen können
     candles_df = pd.DataFrame(overview["candles"])
 
     candles_df["timestamp"] = pd.to_datetime(
@@ -73,6 +73,18 @@ def render_dashboard_body(overview):
 
     chart_df = candles_df.sort_values("timestamp").copy()
 
+    forecast_df = pd.DataFrame(overview.get("forecast_points", []))
+
+    if not forecast_df.empty:
+        forecast_df["timestamp"] = pd.to_datetime(
+            forecast_df["timestamp"].astype("int64"),
+            unit="ms"
+        )
+
+    return candles_df, chart_df, forecast_df
+
+
+def build_volume_figure(chart_df):
     # hier färben wir die Volumenbalken grün oder rot,
     # je nachdem ob die Kerze bullisch oder bärisch war
     volume_colors = []
@@ -102,6 +114,10 @@ def render_dashboard_body(overview):
         height=300
     )
 
+    return volume_fig
+
+
+def build_candlestick_figure(chart_df, forecast_df):
     candlestick_fig = go.Figure(
         data=[
             go.Candlestick(
@@ -115,16 +131,7 @@ def render_dashboard_body(overview):
         ]
     )
 
-    # hier holen wir optional die Forecast-Punkte rein,
-    # falls market_service sie schon mitliefert
-    forecast_df = pd.DataFrame(overview.get("forecast_points", []))
-
     if not forecast_df.empty:
-        forecast_df["timestamp"] = pd.to_datetime(
-            forecast_df["timestamp"].astype("int64"),
-            unit="ms"
-        )
-
         candlestick_fig.add_trace(
             go.Scatter(
                 x=forecast_df["timestamp"],
@@ -144,28 +151,10 @@ def render_dashboard_body(overview):
         height=500
     )
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Instrument", overview["instrument"])
-    col2.metric("Aktueller Preis", f'{overview["last_price"]:.2f}')
-    col3.metric("Preisveränderung", f'{overview["simple_return"]:.2%}')
-    col4.metric("Signal", overview["signal"])
+    return candlestick_fig
 
-    render_signal_box(overview["signal"])
 
-    st.subheader("Kerzenchart")
-    st.plotly_chart(candlestick_fig, width="stretch")
-
-    if not forecast_df.empty:
-        st.caption(
-            "Forecast = einfache lineare Trendprojektion der letzten Schlusskurse, "
-            "keine echte Preisvorhersage."
-        )
-
-    st.subheader("Volumen")
-    st.plotly_chart(volume_fig, width="stretch")
-
-    st.subheader("Schlusskurse + Forecast")
-
+def build_close_figure(chart_df, forecast_df):
     close_fig = go.Figure()
 
     close_fig.add_trace(
@@ -198,8 +187,43 @@ def render_dashboard_body(overview):
         height=350
     )
 
+    return close_fig
+
+
+def render_market_summary(overview):
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Instrument", overview["instrument"])
+    col2.metric("Aktueller Preis", f'{overview["last_price"]:.2f}')
+    col3.metric("Preisveränderung", f'{overview["simple_return"]:.2%}')
+    col4.metric("Signal", overview["signal"])
+
+    render_signal_box(overview["signal"])
+
+
+def render_charts(overview):
+    candles_df, chart_df, forecast_df = build_chart_dataframes(overview)
+
+    candlestick_fig = build_candlestick_figure(chart_df, forecast_df)
+    volume_fig = build_volume_figure(chart_df)
+    close_fig = build_close_figure(chart_df, forecast_df)
+
+    st.subheader("Kerzenchart")
+    st.plotly_chart(candlestick_fig, width="stretch")
+
+    if not forecast_df.empty:
+        st.caption(
+            "Forecast = einfache lineare Trendprojektion der letzten Schlusskurse, "
+            "keine echte Preisvorhersage."
+        )
+
+    st.subheader("Volumen")
+    st.plotly_chart(volume_fig, width="stretch")
+
+    st.subheader("Schlusskurse + Forecast")
     st.plotly_chart(close_fig, width="stretch")
 
+
+def render_forecast_accuracy(overview):
     st.subheader("Forecast Accuracy")
 
     accuracy_summary = overview.get("forecast_accuracy_summary", {})
@@ -222,25 +246,19 @@ def render_dashboard_body(overview):
     if last_abs_error is not None:
         st.write(f"Letzter absoluter Fehler: **{last_abs_error:.2f}**")
 
-    if len(recent_forecast_evaluations) == 0:
-        st.info("Es wurden noch keine Forecasts mit echten Ist-Werten verglichen.")
-    else:
-        accuracy_df = pd.DataFrame(recent_forecast_evaluations)
+    with st.expander("Letzte Forecast-Auswertungen", expanded=False):
+        if len(recent_forecast_evaluations) == 0:
+            st.info("Es wurden noch keine Forecasts mit echten Ist-Werten verglichen.")
+        else:
+            accuracy_df = pd.DataFrame(recent_forecast_evaluations)
+            st.dataframe(
+                accuracy_df,
+                width="stretch",
+                hide_index=True
+            )
 
-        st.write("**Letzte ausgewertete Forecasts:**")
-        st.dataframe(
-            accuracy_df,
-            width="stretch",
-            hide_index=True
-        )
 
-    st.subheader("Candles")
-    st.dataframe(
-        candles_df.sort_values("timestamp", ascending=False),
-        width="stretch",
-        hide_index=True
-    )
-
+def render_analysis_details(overview):
     st.subheader("Kurze Einordnung")
 
     signal_details = overview.get("signal_details", {})
@@ -267,6 +285,8 @@ def render_dashboard_body(overview):
 
     st.info(signal_reason)
 
+
+def render_save_trade_button(overview):
     save_trade = st.button(
         "Signal als Paper Trade speichern",
         width="stretch",
@@ -286,15 +306,9 @@ def render_dashboard_body(overview):
             f"{paper_trade_result['last_price']:.2f}"
         )
 
-    runtime_state = load_runtime_state()
-    trade_df = load_trade_history()
-    trade_summary = summarize_trade_history(trade_df)
 
-    pnl_summary = calculate_pnl_summary(
-        trade_df,
-        current_price=overview["last_price"],
-        position_size=0.01
-    )
+def render_autotrader_status(overview):
+    runtime_state = load_runtime_state()
 
     st.subheader("Autotrader Live-Status")
 
@@ -311,22 +325,49 @@ def render_dashboard_body(overview):
     worker_last_final_signal = runtime_state.get("worker_last_final_signal")
     worker_last_action = runtime_state.get("worker_last_action")
 
-    worker_row1_col1, worker_row1_col2, worker_row1_col3, worker_row1_col4 = st.columns(4)
-    worker_row1_col1.metric("Autotrader", "AN" if bot_enabled else "AUS")
-    worker_row1_col2.metric("Runtime-Position", worker_position_status)
-    worker_row1_col3.metric("Letztes Final-Signal", "-" if worker_last_final_signal is None else str(worker_last_final_signal))
-    worker_row1_col4.metric("Letzte Aktion", "-" if worker_last_action is None else str(worker_last_action))
+    row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
+    row1_col1.metric("Autotrader", "AN" if bot_enabled else "AUS")
+    row1_col2.metric("Runtime-Position", worker_position_status)
+    row1_col3.metric(
+        "Letztes Final-Signal",
+        "-" if worker_last_final_signal is None else str(worker_last_final_signal)
+    )
+    row1_col4.metric(
+        "Letzte Aktion",
+        "-" if worker_last_action is None else str(worker_last_action)
+    )
 
-    worker_row2_col1, worker_row2_col2, worker_row2_col3, worker_row2_col4 = st.columns(4)
-    worker_row2_col1.metric("Worker-Zyklus", "-" if worker_cycle_status is None else str(worker_cycle_status))
-    worker_row2_col2.metric("Heartbeat", "-" if worker_last_seen_at is None else str(worker_last_seen_at))
-    worker_row2_col3.metric("Letzter Preis", "-" if worker_last_price is None else f"{float(worker_last_price):.2f}")
-    worker_row2_col4.metric("Entry-Preis", "-" if worker_entry_price is None else f"{float(worker_entry_price):.2f}")
+    row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+    row2_col1.metric(
+        "Worker-Zyklus",
+        "-" if worker_cycle_status is None else str(worker_cycle_status)
+    )
+    row2_col2.metric(
+        "Heartbeat",
+        "-" if worker_last_seen_at is None else str(worker_last_seen_at)
+    )
+    row2_col3.metric(
+        "Letzter Preis",
+        "-" if worker_last_price is None else f"{float(worker_last_price):.2f}"
+    )
+    row2_col4.metric(
+        "Entry-Preis",
+        "-" if worker_entry_price is None else f"{float(worker_entry_price):.2f}"
+    )
 
-    worker_row3_col1, worker_row3_col2, worker_row3_col3 = st.columns(3)
-    worker_row3_col1.metric("Technisches Signal", "-" if worker_last_technical_signal is None else str(worker_last_technical_signal))
-    worker_row3_col2.metric("Letztes Runtime-Signal", "-" if worker_last_signal is None else str(worker_last_signal))
-    worker_row3_col3.metric("Letzter Auto-Trade", "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp))
+    row3_col1, row3_col2, row3_col3 = st.columns(3)
+    row3_col1.metric(
+        "Technisches Signal",
+        "-" if worker_last_technical_signal is None else str(worker_last_technical_signal)
+    )
+    row3_col2.metric(
+        "Letztes Runtime-Signal",
+        "-" if worker_last_signal is None else str(worker_last_signal)
+    )
+    row3_col3.metric(
+        "Letzter Auto-Trade",
+        "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp)
+    )
 
     if bot_enabled:
         st.write("Der Autotrader ist aktiviert. Der Worker muss dafür in einem separaten Terminal laufen.")
@@ -335,6 +376,16 @@ def render_dashboard_body(overview):
 
     if worker_last_error:
         st.error(f"Letzter Worker-Fehler: {worker_last_error}")
+
+
+def render_pnl_section(overview):
+    trade_df = load_trade_history()
+
+    pnl_summary = calculate_pnl_summary(
+        trade_df,
+        current_price=overview["last_price"],
+        position_size=0.01
+    )
 
     st.subheader("Paper-Trade PnL")
 
@@ -359,34 +410,47 @@ def render_dashboard_body(overview):
     if entry_price is not None:
         st.write(f"Aktueller Entry-Preis der offenen Paper-Trade-Position: **{entry_price:.2f}**")
 
-    if not trade_log_df.empty:
-        pnl_chart_df = trade_log_df.sort_values("exit_timestamp").copy()
+    with st.expander("PnL-Verlauf und abgeschlossene Trades", expanded=False):
+        if not trade_log_df.empty:
+            pnl_chart_df = trade_log_df.sort_values("exit_timestamp").copy()
 
-        pnl_fig = go.Figure(
-            data=[
-                go.Scatter(
-                    x=pnl_chart_df["exit_timestamp"],
-                    y=pnl_chart_df["cumulative_pnl"],
-                    mode="lines+markers",
-                    name="Kumulative PnL"
-                )
-            ]
-        )
+            pnl_fig = go.Figure(
+                data=[
+                    go.Scatter(
+                        x=pnl_chart_df["exit_timestamp"],
+                        y=pnl_chart_df["cumulative_pnl"],
+                        mode="lines+markers",
+                        name="Kumulative PnL"
+                    )
+                ]
+            )
 
-        pnl_fig.update_layout(
-            title="Kumulative PnL",
-            xaxis_title="Exit-Zeitpunkt",
-            yaxis_title="USDT",
-            template="plotly_dark",
-            height=350
-        )
+            pnl_fig.update_layout(
+                title="Kumulative PnL",
+                xaxis_title="Exit-Zeitpunkt",
+                yaxis_title="USDT",
+                template="plotly_dark",
+                height=350
+            )
 
-        st.write("**PnL-Verlauf:**")
-        st.plotly_chart(pnl_fig, width="stretch")
+            st.plotly_chart(pnl_fig, width="stretch")
+            st.dataframe(
+                trade_log_df.sort_values("exit_timestamp", ascending=False),
+                width="stretch",
+                hide_index=True
+            )
+        else:
+            st.info("Es gibt noch keine abgeschlossenen Trades.")
 
-        st.write("**Abgeschlossene Trades:**")
+
+def render_tables_and_history(overview):
+    candles_df, _, _ = build_chart_dataframes(overview)
+    trade_df = load_trade_history()
+    trade_summary = summarize_trade_history(trade_df)
+
+    with st.expander("Candles", expanded=False):
         st.dataframe(
-            trade_log_df.sort_values("exit_timestamp", ascending=False),
+            candles_df.sort_values("timestamp", ascending=False),
             width="stretch",
             hide_index=True
         )
@@ -419,14 +483,26 @@ def render_dashboard_body(overview):
             f"{latest_last_price:.2f}"
         )
 
-    if trade_df.empty:
-        st.info("Es wurden noch keine Paper Trades gespeichert.")
-    else:
-        st.dataframe(
-            trade_df.sort_values("timestamp", ascending=False),
-            width="stretch",
-            hide_index=True
-        )
+    with st.expander("Komplette Trade-Historie", expanded=False):
+        if trade_df.empty:
+            st.info("Es wurden noch keine Paper Trades gespeichert.")
+        else:
+            st.dataframe(
+                trade_df.sort_values("timestamp", ascending=False),
+                width="stretch",
+                hide_index=True
+            )
+
+
+def render_live_dashboard(overview):
+    render_market_summary(overview)
+    render_charts(overview)
+    render_forecast_accuracy(overview)
+    render_analysis_details(overview)
+    render_save_trade_button(overview)
+    render_autotrader_status(overview)
+    render_pnl_section(overview)
+    render_tables_and_history(overview)
 
 
 st.set_page_config(page_title="Crypta", layout="wide")
@@ -447,14 +523,14 @@ with st.sidebar:
 
     bar = st.selectbox(
         "Timeframe",
-        ["15m", "1H", "4H", "1D"],
-        index=1
+        ["1m", "5m", "15m", "1H", "4H", "1D"],
+        index=3
     )
 
     candle_limit = st.slider(
         "Anzahl Candles",
         min_value=5,
-        max_value=100,
+        max_value=120,
         value=24,
         step=1
     )
@@ -502,7 +578,7 @@ def load_current_overview():
 
 
 @st.fragment(run_every=refresh_value)
-def render_live_dashboard():
+def render_live_fragment():
     try:
         overview = load_current_overview()
         st.session_state["overview"] = overview
@@ -510,7 +586,7 @@ def render_live_dashboard():
         st.error(f"Fehler beim Laden der Marktdaten: {e}")
         return
 
-    render_dashboard_body(overview)
+    render_live_dashboard(overview)
 
 
 if run_analysis or "overview" not in st.session_state:
@@ -520,6 +596,6 @@ if run_analysis or "overview" not in st.session_state:
         st.error(f"Fehler beim Laden der Marktdaten: {e}")
 
 if live_mode:
-    render_live_dashboard()
+    render_live_fragment()
 elif "overview" in st.session_state:
-    render_dashboard_body(st.session_state["overview"])
+    render_live_dashboard(st.session_state["overview"])
