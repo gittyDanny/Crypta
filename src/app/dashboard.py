@@ -11,10 +11,10 @@ SRC_PATH = Path(__file__).resolve().parents[1]
 if str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
 
-from services.auto_trade_service import load_runtime_state
-from services.pnl_service import calculate_pnl_summary
 from execution.paper_trader import execute_paper_trade
+from services.auto_trade_service import load_runtime_state, save_runtime_state
 from services.market_service import load_market_overview
+from services.pnl_service import calculate_pnl_summary
 from services.trade_history_service import load_trade_history, summarize_trade_history
 
 
@@ -63,7 +63,7 @@ def render_signal_box(signal):
 
 def render_dashboard_body(overview):
     # hier wandeln wir die Candle-Liste in ein DataFrame um,
-    # damit wir später Charts und Tabellen einfacher bauen können
+    # damit wir Charts und Tabellen einfacher bauen können
     candles_df = pd.DataFrame(overview["candles"])
 
     candles_df["timestamp"] = pd.to_datetime(
@@ -153,7 +153,7 @@ def render_dashboard_body(overview):
     render_signal_box(overview["signal"])
 
     st.subheader("Kerzenchart")
-    st.plotly_chart(candlestick_fig, use_container_width=True)
+    st.plotly_chart(candlestick_fig, width="stretch")
 
     if not forecast_df.empty:
         st.caption(
@@ -162,10 +162,8 @@ def render_dashboard_body(overview):
         )
 
     st.subheader("Volumen")
-    st.plotly_chart(volume_fig, use_container_width=True)
+    st.plotly_chart(volume_fig, width="stretch")
 
-    # hier zeigen wir unter dem Kerzenchart noch die Schlusskurse,
-    # und falls Forecast-Daten da sind, hängen wir diese als zweite Linie an
     st.subheader("Schlusskurse + Forecast")
 
     close_fig = go.Figure()
@@ -179,7 +177,7 @@ def render_dashboard_body(overview):
         )
     )
 
-    if not forecast_df.empty:
+    if not forecast_df.empty and len(forecast_df) > 1:
         forecast_only_df = forecast_df.iloc[1:].copy()
 
         close_fig.add_trace(
@@ -200,7 +198,41 @@ def render_dashboard_body(overview):
         height=350
     )
 
-    st.plotly_chart(close_fig, use_container_width=True)
+    st.plotly_chart(close_fig, width="stretch")
+
+    st.subheader("Forecast Accuracy")
+
+    accuracy_summary = overview.get("forecast_accuracy_summary", {})
+    recent_forecast_evaluations = overview.get("recent_forecast_evaluations", [])
+
+    total_count = accuracy_summary.get("total_count", 0)
+    evaluated_count = accuracy_summary.get("evaluated_count", 0)
+    pending_count = accuracy_summary.get("pending_count", 0)
+    mae = accuracy_summary.get("mae")
+    mape = accuracy_summary.get("mape")
+    last_abs_error = accuracy_summary.get("last_abs_error")
+
+    acc_col1, acc_col2, acc_col3, acc_col4, acc_col5 = st.columns(5)
+    acc_col1.metric("Forecasts gesamt", total_count)
+    acc_col2.metric("Ausgewertet", evaluated_count)
+    acc_col3.metric("Offen", pending_count)
+    acc_col4.metric("MAE", "-" if mae is None else f"{mae:.2f}")
+    acc_col5.metric("MAPE", "-" if mape is None else f"{mape:.2f}%")
+
+    if last_abs_error is not None:
+        st.write(f"Letzter absoluter Fehler: **{last_abs_error:.2f}**")
+
+    if len(recent_forecast_evaluations) == 0:
+        st.info("Es wurden noch keine Forecasts mit echten Ist-Werten verglichen.")
+    else:
+        accuracy_df = pd.DataFrame(recent_forecast_evaluations)
+
+        st.write("**Letzte ausgewertete Forecasts:**")
+        st.dataframe(
+            accuracy_df,
+            width="stretch",
+            hide_index=True
+        )
 
     st.subheader("Candles")
     st.dataframe(
@@ -264,29 +296,45 @@ def render_dashboard_body(overview):
         position_size=0.01
     )
 
-    st.subheader("Worker-Status")
+    st.subheader("Autotrader Live-Status")
 
+    bot_enabled = runtime_state.get("bot_enabled", True)
     worker_position_status = runtime_state["position_status"]
     worker_last_signal = runtime_state["last_signal"]
     worker_entry_price = runtime_state["entry_price"]
     worker_last_trade_timestamp = runtime_state["last_trade_timestamp"]
+    worker_last_seen_at = runtime_state.get("worker_last_seen_at")
+    worker_cycle_status = runtime_state.get("worker_cycle_status")
+    worker_last_error = runtime_state.get("worker_last_error")
+    worker_last_price = runtime_state.get("worker_last_price")
+    worker_last_technical_signal = runtime_state.get("worker_last_technical_signal")
+    worker_last_final_signal = runtime_state.get("worker_last_final_signal")
+    worker_last_action = runtime_state.get("worker_last_action")
 
-    worker_col1, worker_col2, worker_col3, worker_col4 = st.columns(4)
-    worker_col1.metric("Bot-Status", worker_position_status)
-    worker_col2.metric("Letztes Signal", str(worker_last_signal))
-    worker_col3.metric(
-        "Entry-Preis",
-        "-" if worker_entry_price is None else f"{float(worker_entry_price):.2f}"
-    )
-    worker_col4.metric(
-        "Letzter Auto-Trade",
-        "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp)
-    )
+    worker_row1_col1, worker_row1_col2, worker_row1_col3, worker_row1_col4 = st.columns(4)
+    worker_row1_col1.metric("Autotrader", "AN" if bot_enabled else "AUS")
+    worker_row1_col2.metric("Runtime-Position", worker_position_status)
+    worker_row1_col3.metric("Letztes Final-Signal", "-" if worker_last_final_signal is None else str(worker_last_final_signal))
+    worker_row1_col4.metric("Letzte Aktion", "-" if worker_last_action is None else str(worker_last_action))
 
-    if worker_position_status == "LONG":
-        st.write("Der Worker hält aktuell eine offene Long-Position.")
+    worker_row2_col1, worker_row2_col2, worker_row2_col3, worker_row2_col4 = st.columns(4)
+    worker_row2_col1.metric("Worker-Zyklus", "-" if worker_cycle_status is None else str(worker_cycle_status))
+    worker_row2_col2.metric("Heartbeat", "-" if worker_last_seen_at is None else str(worker_last_seen_at))
+    worker_row2_col3.metric("Letzter Preis", "-" if worker_last_price is None else f"{float(worker_last_price):.2f}")
+    worker_row2_col4.metric("Entry-Preis", "-" if worker_entry_price is None else f"{float(worker_entry_price):.2f}")
+
+    worker_row3_col1, worker_row3_col2, worker_row3_col3 = st.columns(3)
+    worker_row3_col1.metric("Technisches Signal", "-" if worker_last_technical_signal is None else str(worker_last_technical_signal))
+    worker_row3_col2.metric("Letztes Runtime-Signal", "-" if worker_last_signal is None else str(worker_last_signal))
+    worker_row3_col3.metric("Letzter Auto-Trade", "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp))
+
+    if bot_enabled:
+        st.write("Der Autotrader ist aktiviert. Der Worker muss dafür in einem separaten Terminal laufen.")
     else:
-        st.write("Der Worker hält aktuell keine offene Position.")
+        st.warning("Der Autotrader ist deaktiviert. Der Worker kann weiterlaufen, führt aber keine Trades aus.")
+
+    if worker_last_error:
+        st.error(f"Letzter Worker-Fehler: {worker_last_error}")
 
     st.subheader("Paper-Trade PnL")
 
@@ -303,13 +351,13 @@ def render_dashboard_body(overview):
     pnl_col1.metric("Realisiert", f"{realized_pnl:.2f} USDT")
     pnl_col2.metric("Offen", f"{unrealized_pnl:.2f} USDT")
     pnl_col3.metric("Gesamt", f"{total_pnl:.2f} USDT")
-    pnl_col4.metric("Position", position_status)
+    pnl_col4.metric("Paper-Trade Position", position_status)
 
     st.write(f"Positionsgröße: **{position_size} BTC**")
     st.write(f"Geschlossene Trades: **{closed_trades}**")
 
     if entry_price is not None:
-        st.write(f"Aktueller Entry-Preis der offenen Position: **{entry_price:.2f}**")
+        st.write(f"Aktueller Entry-Preis der offenen Paper-Trade-Position: **{entry_price:.2f}**")
 
     if not trade_log_df.empty:
         pnl_chart_df = trade_log_df.sort_values("exit_timestamp").copy()
@@ -334,7 +382,7 @@ def render_dashboard_body(overview):
         )
 
         st.write("**PnL-Verlauf:**")
-        st.plotly_chart(pnl_fig, use_container_width=True)
+        st.plotly_chart(pnl_fig, width="stretch")
 
         st.write("**Abgeschlossene Trades:**")
         st.dataframe(
@@ -386,6 +434,8 @@ st.set_page_config(page_title="Crypta", layout="wide")
 st.title("Crypta")
 st.caption("Modulares Bitcoin Analyse-Dashboard")
 
+sidebar_runtime_state = load_runtime_state()
+
 with st.sidebar:
     st.header("Einstellungen")
 
@@ -421,6 +471,22 @@ with st.sidebar:
         step=5,
         disabled=not live_mode,
     )
+
+    st.divider()
+    st.subheader("Autotrader")
+
+    autotrader_enabled = st.toggle(
+        "Autotrader aktiv",
+        value=sidebar_runtime_state.get("bot_enabled", True),
+        key="sidebar_autotrader_enabled"
+    )
+
+    if autotrader_enabled != sidebar_runtime_state.get("bot_enabled", True):
+        sidebar_runtime_state["bot_enabled"] = autotrader_enabled
+        save_runtime_state(sidebar_runtime_state)
+        sidebar_runtime_state = load_runtime_state()
+
+    st.caption("Der Worker muss weiter in einem separaten Terminal laufen.")
 
 refresh_value = f"{refresh_seconds}s" if live_mode else None
 
