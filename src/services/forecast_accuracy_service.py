@@ -235,7 +235,9 @@ def build_forecast_accuracy_summary(inst_id=None, bar=None):
             "pending_count": 0,
             "mae": None,
             "mape": None,
+            "mean_error": None,
             "last_abs_error": None,
+            "last_error_value": None,
         }
 
     evaluated_df = history_df[history_df["status"] == "EVALUATED"].copy()
@@ -244,12 +246,20 @@ def build_forecast_accuracy_summary(inst_id=None, bar=None):
     if evaluated_df.empty:
         mae = None
         mape = None
+        mean_error = None
         last_abs_error = None
+        last_error_value = None
     else:
         evaluated_df = evaluated_df.sort_values("target_timestamp", ascending=False)
         mae = round(float(evaluated_df["abs_error"].mean()), 2)
         mape = round(float(evaluated_df["abs_error_pct"].mean()), 2)
+
+        # hier berechnen wir zusätzlich den durchschnittlichen signierten Fehler,
+        # also ob der Forecast systematisch eher zu hoch oder zu niedrig lag
+        mean_error = round(float(evaluated_df["error_value"].mean()), 2)
+
         last_abs_error = round(float(evaluated_df.iloc[0]["abs_error"]), 2)
+        last_error_value = round(float(evaluated_df.iloc[0]["error_value"]), 2)
 
     return {
         "total_count": int(len(history_df)),
@@ -257,7 +267,9 @@ def build_forecast_accuracy_summary(inst_id=None, bar=None):
         "pending_count": int(len(pending_df)),
         "mae": mae,
         "mape": mape,
+        "mean_error": mean_error,
         "last_abs_error": last_abs_error,
+        "last_error_value": last_error_value,
     }
 
 
@@ -290,11 +302,13 @@ def build_forecast_accuracy_by_step(inst_id=None, bar=None):
         if evaluated_df.empty:
             mae = None
             mape = None
+            mean_error = None
             last_abs_error = None
         else:
             evaluated_df = evaluated_df.sort_values("target_timestamp", ascending=False)
             mae = round(float(evaluated_df["abs_error"].mean()), 2)
             mape = round(float(evaluated_df["abs_error_pct"].mean()), 2)
+            mean_error = round(float(evaluated_df["error_value"].mean()), 2)
             last_abs_error = round(float(evaluated_df.iloc[0]["abs_error"]), 2)
 
         step_rows.append(
@@ -305,6 +319,7 @@ def build_forecast_accuracy_by_step(inst_id=None, bar=None):
                 "Offen": int(len(pending_df)),
                 "MAE": mae,
                 "MAPE %": mape,
+                "Ø Fehler": mean_error,
                 "Letzter absoluter Fehler": last_abs_error,
             }
         )

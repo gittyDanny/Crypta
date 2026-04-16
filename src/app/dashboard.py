@@ -13,6 +13,7 @@ if str(SRC_PATH) not in sys.path:
 
 from execution.paper_trader import execute_paper_trade
 from services.auto_trade_service import load_runtime_state, save_runtime_state
+from services.autotrader_trade_service import load_autotrader_trades
 from services.market_service import load_market_overview
 from services.pnl_service import calculate_pnl_summary
 from services.trade_history_service import load_trade_history, summarize_trade_history
@@ -201,7 +202,7 @@ def render_market_summary(overview):
 
 
 def render_charts(overview):
-    candles_df, chart_df, forecast_df = build_chart_dataframes(overview)
+    _, chart_df, forecast_df = build_chart_dataframes(overview)
 
     candlestick_fig = build_candlestick_figure(chart_df, forecast_df)
     volume_fig = build_volume_figure(chart_df)
@@ -235,14 +236,20 @@ def render_forecast_accuracy(overview):
     pending_count = accuracy_summary.get("pending_count", 0)
     mae = accuracy_summary.get("mae")
     mape = accuracy_summary.get("mape")
+    mean_error = accuracy_summary.get("mean_error")
     last_abs_error = accuracy_summary.get("last_abs_error")
 
-    acc_col1, acc_col2, acc_col3, acc_col4, acc_col5 = st.columns(5)
+    acc_col1, acc_col2, acc_col3, acc_col4, acc_col5, acc_col6 = st.columns(6)
     acc_col1.metric("Forecasts gesamt", total_count)
     acc_col2.metric("Ausgewertet", evaluated_count)
     acc_col3.metric("Offen", pending_count)
     acc_col4.metric("MAE", "-" if mae is None else f"{mae:.2f}")
     acc_col5.metric("MAPE", "-" if mape is None else f"{mape:.2f}%")
+    acc_col6.metric("Ø Fehler", "-" if mean_error is None else f"{mean_error:.2f}")
+
+    st.write(
+        f"Die Durchschnittswerte basieren aktuell auf **{evaluated_count} ausgewerteten Forecasts**."
+    )
 
     if last_abs_error is not None:
         st.write(f"Letzter absoluter Fehler: **{last_abs_error:.2f}**")
@@ -319,6 +326,220 @@ def render_save_trade_button(overview):
         )
 
 
+def _find_nearest_position(timestamp_series, target_timestamp):
+    differences = (timestamp_series - target_timestamp).abs()
+    return int(differences.idxmin())
+
+
+def build_autotrader_trade_view_figure(chart_df, trade_row):
+    entry_timestamp = pd.to_datetime(trade_row["entry_timestamp"])
+    exit_timestamp = pd.to_datetime(trade_row["exit_timestamp"]) if pd.notna(trade_row["exit_timestamp"]) else None
+
+    entry_price = float(trade_row["entry_price"])
+    stop_loss = float(trade_row["stop_loss"])
+    take_profit = float(trade_row["take_profit"])
+
+    working_df = chart_df.reset_index(drop=True).copy()
+
+    entry_pos = _find_nearest_position(working_df["timestamp"], entry_timestamp)
+
+    if exit_timestamp is not None:
+        exit_pos = _find_nearest_position(working_df["timestamp"], exit_timestamp)
+    else:
+        exit_pos = len(working_df) - 1
+
+    start_pos = max(0, min(entry_pos, exit_pos) - 3)
+    end_pos = min(len(working_df) - 1, max(entry_pos, exit_pos) + 4)
+
+    trade_chart_df = working_df.iloc[start_pos:end_pos + 1].copy()
+
+    zone_start = entry_timestamp
+    zone_end = exit_timestamp if exit_timestamp is not None else trade_chart_df["timestamp"].max()
+
+    trade_fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=trade_chart_df["timestamp"],
+                open=trade_chart_df["open"],
+                high=trade_chart_df["high"],
+                low=trade_chart_df["low"],
+                close=trade_chart_df["close"],
+                name="Candles"
+            )
+        ]
+    )
+
+    # grüne Chance-Zone
+    trade_fig.add_shape(
+        type="rect",
+        x0=zone_start,
+        x1=zone_end,
+        y0=entry_price,
+        y1=take_profit,
+        fillcolor="rgba(34, 197, 94, 0.14)",
+        line=dict(color="rgba(34, 197, 94, 0.30)", width=1),
+        layer="below"
+    )
+
+    # rote Risiko-Zone
+    trade_fig.add_shape(
+        type="rect",
+        x0=zone_start,
+        x1=zone_end,
+        y0=stop_loss,
+        y1=entry_price,
+        fillcolor="rgba(239, 68, 68, 0.14)",
+        line=dict(color="rgba(239, 68, 68, 0.30)", width=1),
+        layer="below"
+    )
+
+    # horizontale Linien
+    trade_fig.add_shape(
+        type="line",
+        x0=zone_start,
+        x1=zone_end,
+        y0=entry_price,
+        y1=entry_price,
+        line=dict(color="#22d3ee", width=2)
+    )
+
+    trade_fig.add_shape(
+        type="line",
+        x0=zone_start,
+        x1=zone_end,
+        y0=stop_loss,
+        y1=stop_loss,
+        line=dict(color="#ef4444", width=2)
+    )
+
+    trade_fig.add_shape(
+        type="line",
+        x0=zone_start,
+        x1=zone_end,
+        y0=take_profit,
+        y1=take_profit,
+        line=dict(color="#22c55e", width=2)
+    )
+
+    # Entry Marker
+    trade_fig.add_trace(
+        go.Scatter(
+            x=[entry_timestamp],
+            y=[entry_price],
+            mode="markers+text",
+            name="Entry",
+            marker=dict(symbol="triangle-right", size=12, color="#60a5fa"),
+            text=["Entry"],
+            textposition="bottom center"
+        )
+    )
+
+    # Exit Marker falls geschlossen
+    if exit_timestamp is not None and pd.notna(trade_row["exit_price"]):
+        trade_fig.add_trace(
+            go.Scatter(
+                x=[exit_timestamp],
+                y=[float(trade_row["exit_price"])],
+                mode="markers+text",
+                name="Exit",
+                marker=dict(symbol="x", size=12, color="#f8fafc"),
+                text=[str(trade_row["exit_reason"])],
+                textposition="top center"
+            )
+        )
+
+    trade_fig.update_layout(
+        title="Autotrader Trade View",
+        xaxis_title="Zeit",
+        yaxis_title="Preis",
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=560
+    )
+
+    return trade_fig
+
+
+def render_autotrader_trade_view(overview):
+    st.subheader("Autotrader Trade View")
+
+    _, chart_df, _ = build_chart_dataframes(overview)
+    autotrader_trade_df = load_autotrader_trades()
+
+    if autotrader_trade_df.empty:
+        st.info("Es gibt noch keine strukturierten Autotrader-Trades mit SL/TP.")
+        return
+
+    filtered_df = autotrader_trade_df[
+        autotrader_trade_df["instrument"] == overview["instrument"]
+    ].copy()
+
+    if filtered_df.empty:
+        st.info("Für dieses Instrument gibt es noch keine Autotrader-Trades.")
+        return
+
+    filtered_df = filtered_df.sort_values("entry_timestamp", ascending=False).head(20).copy()
+
+    trade_label_map = {}
+
+    for _, row in filtered_df.iterrows():
+        entry_time = row["entry_timestamp"]
+        status = row["status"]
+        trade_bar = row["bar"]
+
+        if pd.isna(entry_time):
+            label = f"{row['trade_id']} | {trade_bar} | {status}"
+        else:
+            label = f"{entry_time.strftime('%Y-%m-%d %H:%M')} | {trade_bar} | {status}"
+
+        trade_label_map[row["trade_id"]] = label
+
+    selected_trade_id = st.selectbox(
+        "Autotrader-Trade auswählen",
+        options=list(trade_label_map.keys()),
+        format_func=lambda trade_id: trade_label_map[trade_id],
+        key="selected_autotrader_trade_id"
+    )
+
+    selected_trade = filtered_df[filtered_df["trade_id"] == selected_trade_id].iloc[0]
+
+    info_col1, info_col2, info_col3, info_col4, info_col5, info_col6 = st.columns(6)
+    info_col1.metric("Status", str(selected_trade["status"]))
+    info_col2.metric("Trade-Bar", str(selected_trade["bar"]))
+    info_col3.metric("Entry", f"{float(selected_trade['entry_price']):.2f}")
+    info_col4.metric("Stop Loss", f"{float(selected_trade['stop_loss']):.2f}")
+    info_col5.metric("Take Profit", f"{float(selected_trade['take_profit']):.2f}")
+    info_col6.metric("RR", f"{float(selected_trade['rr_ratio']):.2f}")
+
+    info_row2_col1, info_row2_col2, info_row2_col3 = st.columns(3)
+    info_row2_col1.metric(
+        "Exit",
+        "-" if pd.isna(selected_trade["exit_price"]) else f"{float(selected_trade['exit_price']):.2f}"
+    )
+    info_row2_col2.metric(
+        "Exit Reason",
+        "-" if pd.isna(selected_trade["exit_reason"]) else str(selected_trade["exit_reason"])
+    )
+    info_row2_col3.metric(
+        "PnL USDT",
+        "-" if pd.isna(selected_trade["pnl_usdt"]) else f"{float(selected_trade['pnl_usdt']):.4f}"
+    )
+
+    if str(selected_trade["bar"]) != str(overview["bar"]):
+        st.warning(
+            f"Der ausgewählte Trade wurde auf Basis von {selected_trade['bar']} eröffnet, "
+            f"du betrachtest gerade aber {overview['bar']}-Candles."
+        )
+
+    trade_fig = build_autotrader_trade_view_figure(chart_df, selected_trade)
+    st.plotly_chart(trade_fig, width="stretch")
+
+    st.caption(
+        "Die grüne Zone zeigt das Gewinnziel, die rote Zone das Risiko bis zum Stop Loss. "
+        "Die horizontale Mittel-Linie ist der Entry-Preis."
+    )
+
+
 def render_autotrader_status(overview):
     runtime_state = load_runtime_state()
 
@@ -336,6 +557,9 @@ def render_autotrader_status(overview):
     worker_last_technical_signal = runtime_state.get("worker_last_technical_signal")
     worker_last_final_signal = runtime_state.get("worker_last_final_signal")
     worker_last_action = runtime_state.get("worker_last_action")
+    worker_last_exit_reason = runtime_state.get("worker_last_exit_reason")
+    active_trade_stop_loss = runtime_state.get("active_trade_stop_loss")
+    active_trade_take_profit = runtime_state.get("active_trade_take_profit")
 
     row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
     row1_col1.metric("Autotrader", "AN" if bot_enabled else "AUS")
@@ -367,7 +591,7 @@ def render_autotrader_status(overview):
         "-" if worker_entry_price is None else f"{float(worker_entry_price):.2f}"
     )
 
-    row3_col1, row3_col2, row3_col3 = st.columns(3)
+    row3_col1, row3_col2, row3_col3, row3_col4 = st.columns(4)
     row3_col1.metric(
         "Technisches Signal",
         "-" if worker_last_technical_signal is None else str(worker_last_technical_signal)
@@ -377,9 +601,19 @@ def render_autotrader_status(overview):
         "-" if worker_last_signal is None else str(worker_last_signal)
     )
     row3_col3.metric(
-        "Letzter Auto-Trade",
-        "-" if worker_last_trade_timestamp is None else str(worker_last_trade_timestamp)
+        "Stop Loss",
+        "-" if active_trade_stop_loss is None else f"{float(active_trade_stop_loss):.2f}"
     )
+    row3_col4.metric(
+        "Take Profit",
+        "-" if active_trade_take_profit is None else f"{float(active_trade_take_profit):.2f}"
+    )
+
+    if worker_last_trade_timestamp is not None:
+        st.write(f"Letzter Auto-Trade: **{worker_last_trade_timestamp}**")
+
+    if worker_last_exit_reason:
+        st.write(f"Letzter Exit-Grund: **{worker_last_exit_reason}**")
 
     if bot_enabled:
         st.write("Der Autotrader ist aktiviert. Der Worker muss dafür in einem separaten Terminal laufen.")
@@ -512,6 +746,7 @@ def render_live_dashboard(overview):
     render_forecast_accuracy(overview)
     render_analysis_details(overview)
     render_save_trade_button(overview)
+    render_autotrader_trade_view(overview)
     render_autotrader_status(overview)
     render_pnl_section(overview)
     render_tables_and_history(overview)
