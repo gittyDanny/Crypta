@@ -20,7 +20,6 @@ from services.trade_history_service import load_trade_history, summarize_trade_h
 
 
 def render_signal_box(signal):
-    # hier ordnen wir jedem Signal eine Farbe und einen kleinen Beschreibungstext zu
     if signal == "BUY":
         background_color = "#123524"
         border_color = "#22c55e"
@@ -63,8 +62,6 @@ def render_signal_box(signal):
 
 
 def build_chart_dataframes(overview):
-    # hier wandeln wir die Candle-Liste in DataFrames um,
-    # damit wir danach Charts und Tabellen einfacher bauen können
     candles_df = pd.DataFrame(overview["candles"])
 
     candles_df["timestamp"] = pd.to_datetime(
@@ -86,8 +83,6 @@ def build_chart_dataframes(overview):
 
 
 def build_volume_figure(chart_df):
-    # hier färben wir die Volumenbalken grün oder rot,
-    # je nachdem ob die Kerze bullisch oder bärisch war
     volume_colors = []
 
     for _, row in chart_df.iterrows():
@@ -331,30 +326,106 @@ def _find_nearest_position(timestamp_series, target_timestamp):
     return int(differences.idxmin())
 
 
+def _build_trade_duration_text(selected_trade):
+    entry_timestamp = pd.to_datetime(selected_trade["entry_timestamp"])
+
+    if pd.isna(entry_timestamp):
+        return "-"
+
+    if pd.isna(selected_trade["exit_timestamp"]):
+        end_timestamp = pd.Timestamp.now()
+    else:
+        end_timestamp = pd.to_datetime(selected_trade["exit_timestamp"])
+
+    duration = end_timestamp - entry_timestamp
+    total_minutes = int(duration.total_seconds() // 60)
+
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+
+    return f"{minutes}m"
+
+
+def _resolve_trade_chart_times(trade_row):
+    entry_chart_timestamp = pd.to_datetime(
+        trade_row.get("entry_chart_timestamp"),
+        errors="coerce"
+    )
+
+    exit_chart_timestamp = pd.to_datetime(
+        trade_row.get("exit_chart_timestamp"),
+        errors="coerce"
+    )
+
+    if pd.isna(entry_chart_timestamp):
+        entry_chart_timestamp = pd.to_datetime(
+            trade_row.get("entry_signal_candle_timestamp"),
+            errors="coerce"
+        )
+
+    if pd.isna(entry_chart_timestamp):
+        entry_chart_timestamp = pd.to_datetime(
+            trade_row.get("entry_timestamp"),
+            errors="coerce"
+        )
+
+    return entry_chart_timestamp, exit_chart_timestamp
+
+
+def _get_candle_time_delta(chart_df):
+    sorted_df = chart_df.sort_values("timestamp").copy()
+
+    if len(sorted_df) < 2:
+        return pd.Timedelta(minutes=1)
+
+    time_differences = sorted_df["timestamp"].diff().dropna()
+
+    if time_differences.empty:
+        return pd.Timedelta(minutes=1)
+
+    median_delta = time_differences.median()
+
+    if pd.isna(median_delta) or median_delta <= pd.Timedelta(0):
+        return pd.Timedelta(minutes=1)
+
+    return median_delta
+
+
 def build_autotrader_trade_view_figure(chart_df, trade_row):
-    entry_timestamp = pd.to_datetime(trade_row["entry_timestamp"])
-    exit_timestamp = pd.to_datetime(trade_row["exit_timestamp"]) if pd.notna(trade_row["exit_timestamp"]) else None
+    entry_chart_timestamp, exit_chart_timestamp = _resolve_trade_chart_times(trade_row)
+
+    if pd.isna(entry_chart_timestamp):
+        entry_chart_timestamp = chart_df["timestamp"].iloc[-1]
 
     entry_price = float(trade_row["entry_price"])
     stop_loss = float(trade_row["stop_loss"])
     take_profit = float(trade_row["take_profit"])
+    side = str(trade_row["side"])
 
-    working_df = chart_df.reset_index(drop=True).copy()
+    working_df = chart_df.sort_values("timestamp").reset_index(drop=True).copy()
+    candle_delta = _get_candle_time_delta(working_df)
 
-    entry_pos = _find_nearest_position(working_df["timestamp"], entry_timestamp)
+    entry_pos = _find_nearest_position(working_df["timestamp"], entry_chart_timestamp)
 
-    if exit_timestamp is not None:
-        exit_pos = _find_nearest_position(working_df["timestamp"], exit_timestamp)
+    if pd.notna(exit_chart_timestamp):
+        exit_pos = _find_nearest_position(working_df["timestamp"], exit_chart_timestamp)
     else:
         exit_pos = len(working_df) - 1
+        exit_chart_timestamp = working_df["timestamp"].iloc[exit_pos]
 
     start_pos = max(0, min(entry_pos, exit_pos) - 3)
     end_pos = min(len(working_df) - 1, max(entry_pos, exit_pos) + 4)
 
     trade_chart_df = working_df.iloc[start_pos:end_pos + 1].copy()
 
-    zone_start = entry_timestamp
-    zone_end = exit_timestamp if exit_timestamp is not None else trade_chart_df["timestamp"].max()
+    zone_start = working_df["timestamp"].iloc[entry_pos]
+    zone_end = working_df["timestamp"].iloc[exit_pos]
+
+    if exit_pos == entry_pos:
+        zone_end = zone_start + candle_delta
 
     trade_fig = go.Figure(
         data=[
@@ -369,31 +440,51 @@ def build_autotrader_trade_view_figure(chart_df, trade_row):
         ]
     )
 
-    # grüne Chance-Zone
-    trade_fig.add_shape(
-        type="rect",
-        x0=zone_start,
-        x1=zone_end,
-        y0=entry_price,
-        y1=take_profit,
-        fillcolor="rgba(34, 197, 94, 0.14)",
-        line=dict(color="rgba(34, 197, 94, 0.30)", width=1),
-        layer="below"
-    )
+    if side == "LONG":
+        trade_fig.add_shape(
+            type="rect",
+            x0=zone_start,
+            x1=zone_end,
+            y0=entry_price,
+            y1=take_profit,
+            fillcolor="rgba(34, 197, 94, 0.14)",
+            line=dict(color="rgba(34, 197, 94, 0.30)", width=1),
+            layer="below"
+        )
 
-    # rote Risiko-Zone
-    trade_fig.add_shape(
-        type="rect",
-        x0=zone_start,
-        x1=zone_end,
-        y0=stop_loss,
-        y1=entry_price,
-        fillcolor="rgba(239, 68, 68, 0.14)",
-        line=dict(color="rgba(239, 68, 68, 0.30)", width=1),
-        layer="below"
-    )
+        trade_fig.add_shape(
+            type="rect",
+            x0=zone_start,
+            x1=zone_end,
+            y0=stop_loss,
+            y1=entry_price,
+            fillcolor="rgba(239, 68, 68, 0.14)",
+            line=dict(color="rgba(239, 68, 68, 0.30)", width=1),
+            layer="below"
+        )
+    else:
+        trade_fig.add_shape(
+            type="rect",
+            x0=zone_start,
+            x1=zone_end,
+            y0=take_profit,
+            y1=entry_price,
+            fillcolor="rgba(34, 197, 94, 0.14)",
+            line=dict(color="rgba(34, 197, 94, 0.30)", width=1),
+            layer="below"
+        )
 
-    # horizontale Linien
+        trade_fig.add_shape(
+            type="rect",
+            x0=zone_start,
+            x1=zone_end,
+            y0=entry_price,
+            y1=stop_loss,
+            fillcolor="rgba(239, 68, 68, 0.14)",
+            line=dict(color="rgba(239, 68, 68, 0.30)", width=1),
+            layer="below"
+        )
+
     trade_fig.add_shape(
         type="line",
         x0=zone_start,
@@ -421,29 +512,50 @@ def build_autotrader_trade_view_figure(chart_df, trade_row):
         line=dict(color="#22c55e", width=2)
     )
 
-    # Entry Marker
+    trade_fig.add_shape(
+        type="line",
+        x0=zone_start,
+        x1=zone_start,
+        y0=min(stop_loss, take_profit),
+        y1=max(stop_loss, take_profit),
+        line=dict(color="#94a3b8", width=1, dash="dot")
+    )
+
+    trade_fig.add_shape(
+        type="line",
+        x0=zone_end,
+        x1=zone_end,
+        y0=min(stop_loss, take_profit),
+        y1=max(stop_loss, take_profit),
+        line=dict(color="#94a3b8", width=1, dash="dot")
+    )
+
+    entry_label = "Long Entry" if side == "LONG" else "Short Entry"
+
     trade_fig.add_trace(
         go.Scatter(
-            x=[entry_timestamp],
+            x=[zone_start],
             y=[entry_price],
             mode="markers+text",
             name="Entry",
             marker=dict(symbol="triangle-right", size=12, color="#60a5fa"),
-            text=["Entry"],
+            text=[entry_label],
             textposition="bottom center"
         )
     )
 
-    # Exit Marker falls geschlossen
-    if exit_timestamp is not None and pd.notna(trade_row["exit_price"]):
+    if pd.notna(trade_row["exit_price"]):
+        exit_label = "-" if pd.isna(trade_row["exit_reason"]) else str(trade_row["exit_reason"])
+        exit_marker_x = zone_end if exit_pos == entry_pos else working_df["timestamp"].iloc[exit_pos]
+
         trade_fig.add_trace(
             go.Scatter(
-                x=[exit_timestamp],
+                x=[exit_marker_x],
                 y=[float(trade_row["exit_price"])],
                 mode="markers+text",
                 name="Exit",
                 marker=dict(symbol="x", size=12, color="#f8fafc"),
-                text=[str(trade_row["exit_reason"])],
+                text=[exit_label],
                 textposition="top center"
             )
         )
@@ -458,6 +570,43 @@ def build_autotrader_trade_view_figure(chart_df, trade_row):
     )
 
     return trade_fig
+
+
+def render_trade_details_block(selected_trade, chart_df, title):
+    st.markdown(f"**{title}**")
+
+    duration_text = _build_trade_duration_text(selected_trade)
+
+    info_col1, info_col2, info_col3, info_col4, info_col5, info_col6 = st.columns(6)
+    info_col1.metric("Status", str(selected_trade["status"]))
+    info_col2.metric("Side", str(selected_trade["side"]))
+    info_col3.metric("Entry", f"{float(selected_trade['entry_price']):.2f}")
+    info_col4.metric("Stop Loss", f"{float(selected_trade['stop_loss']):.2f}")
+    info_col5.metric("Take Profit", f"{float(selected_trade['take_profit']):.2f}")
+    info_col6.metric("RR", f"{float(selected_trade['rr_ratio']):.2f}")
+
+    info_row2_col1, info_row2_col2, info_row2_col3, info_row2_col4 = st.columns(4)
+    info_row2_col1.metric("Hebel", f"{float(selected_trade['leverage']):.1f}x")
+    info_row2_col2.metric("Positionsgröße", f"{float(selected_trade['position_size_btc']):.4f} BTC")
+    info_row2_col3.metric("Dauer", duration_text)
+    info_row2_col4.metric("Timeframe", str(selected_trade["bar"]))
+
+    info_row3_col1, info_row3_col2, info_row3_col3 = st.columns(3)
+    info_row3_col1.metric(
+        "Exit",
+        "-" if pd.isna(selected_trade["exit_price"]) else f"{float(selected_trade['exit_price']):.2f}"
+    )
+    info_row3_col2.metric(
+        "Exit Reason",
+        "-" if pd.isna(selected_trade["exit_reason"]) else str(selected_trade["exit_reason"])
+    )
+    info_row3_col3.metric(
+        "PnL USDT",
+        "-" if pd.isna(selected_trade["pnl_usdt"]) else f"{float(selected_trade['pnl_usdt']):.4f}"
+    )
+
+    trade_fig = build_autotrader_trade_view_figure(chart_df, selected_trade)
+    st.plotly_chart(trade_fig, width="stretch")
 
 
 def render_autotrader_trade_view(overview):
@@ -478,65 +627,73 @@ def render_autotrader_trade_view(overview):
         st.info("Für dieses Instrument gibt es noch keine Autotrader-Trades.")
         return
 
-    filtered_df = filtered_df.sort_values("entry_timestamp", ascending=False).head(20).copy()
+    open_trades_df = filtered_df[filtered_df["status"] == "OPEN"].copy()
+    closed_trades_df = filtered_df[filtered_df["status"] == "CLOSED"].copy()
+
+    if not open_trades_df.empty:
+        open_trades_df = open_trades_df.sort_values("entry_timestamp", ascending=False)
+        active_trade = open_trades_df.iloc[0]
+
+        if str(active_trade["bar"]) != str(overview["bar"]):
+            st.warning(
+                f"Der aktive Trade wurde auf Basis von {active_trade['bar']} eröffnet, "
+                f"du betrachtest gerade aber {overview['bar']}-Candles."
+            )
+
+        render_trade_details_block(
+            active_trade,
+            chart_df,
+            "Aktiver Trade"
+        )
+    else:
+        st.info("Aktuell gibt es keinen offenen Autotrader-Trade.")
+
+    st.divider()
+
+    if closed_trades_df.empty:
+        st.info("Es gibt noch keine geschlossenen strukturierten Autotrader-Trades.")
+        return
+
+    closed_trades_df = closed_trades_df.sort_values("entry_timestamp", ascending=False).head(20).copy()
 
     trade_label_map = {}
 
-    for _, row in filtered_df.iterrows():
+    for _, row in closed_trades_df.iterrows():
         entry_time = row["entry_timestamp"]
-        status = row["status"]
+        side = row["side"]
         trade_bar = row["bar"]
 
         if pd.isna(entry_time):
-            label = f"{row['trade_id']} | {trade_bar} | {status}"
+            label = f"{row['trade_id']} | {side} | {trade_bar} | CLOSED"
         else:
-            label = f"{entry_time.strftime('%Y-%m-%d %H:%M')} | {trade_bar} | {status}"
+            label = f"{entry_time.strftime('%Y-%m-%d %H:%M')} | {side} | {trade_bar} | CLOSED"
 
         trade_label_map[row["trade_id"]] = label
 
     selected_trade_id = st.selectbox(
-        "Autotrader-Trade auswählen",
+        "Geschlossenen Trade auswählen",
         options=list(trade_label_map.keys()),
         format_func=lambda trade_id: trade_label_map[trade_id],
-        key="selected_autotrader_trade_id"
+        key="selected_closed_autotrader_trade_id"
     )
 
-    selected_trade = filtered_df[filtered_df["trade_id"] == selected_trade_id].iloc[0]
-
-    info_col1, info_col2, info_col3, info_col4, info_col5, info_col6 = st.columns(6)
-    info_col1.metric("Status", str(selected_trade["status"]))
-    info_col2.metric("Trade-Bar", str(selected_trade["bar"]))
-    info_col3.metric("Entry", f"{float(selected_trade['entry_price']):.2f}")
-    info_col4.metric("Stop Loss", f"{float(selected_trade['stop_loss']):.2f}")
-    info_col5.metric("Take Profit", f"{float(selected_trade['take_profit']):.2f}")
-    info_col6.metric("RR", f"{float(selected_trade['rr_ratio']):.2f}")
-
-    info_row2_col1, info_row2_col2, info_row2_col3 = st.columns(3)
-    info_row2_col1.metric(
-        "Exit",
-        "-" if pd.isna(selected_trade["exit_price"]) else f"{float(selected_trade['exit_price']):.2f}"
-    )
-    info_row2_col2.metric(
-        "Exit Reason",
-        "-" if pd.isna(selected_trade["exit_reason"]) else str(selected_trade["exit_reason"])
-    )
-    info_row2_col3.metric(
-        "PnL USDT",
-        "-" if pd.isna(selected_trade["pnl_usdt"]) else f"{float(selected_trade['pnl_usdt']):.4f}"
-    )
+    selected_trade = closed_trades_df[closed_trades_df["trade_id"] == selected_trade_id].iloc[0]
 
     if str(selected_trade["bar"]) != str(overview["bar"]):
         st.warning(
-            f"Der ausgewählte Trade wurde auf Basis von {selected_trade['bar']} eröffnet, "
+            f"Der ausgewählte geschlossene Trade wurde auf Basis von {selected_trade['bar']} eröffnet, "
             f"du betrachtest gerade aber {overview['bar']}-Candles."
         )
 
-    trade_fig = build_autotrader_trade_view_figure(chart_df, selected_trade)
-    st.plotly_chart(trade_fig, width="stretch")
+    render_trade_details_block(
+        selected_trade,
+        chart_df,
+        "Historischer Trade"
+    )
 
     st.caption(
-        "Die grüne Zone zeigt das Gewinnziel, die rote Zone das Risiko bis zum Stop Loss. "
-        "Die horizontale Mittel-Linie ist der Entry-Preis."
+        "Grün zeigt die Zielzone, Rot die Risikozone. "
+        "Die vertikalen Linien markieren Beginn und Ende der Trade-Dauer."
     )
 
 
@@ -546,6 +703,15 @@ def render_autotrader_status(overview):
     st.subheader("Autotrader Live-Status")
 
     bot_enabled = runtime_state.get("bot_enabled", True)
+    reward_multiple = float(runtime_state.get("reward_multiple", 2.0))
+    leverage = float(runtime_state.get("leverage", 1.0))
+    auto_leverage_enabled = bool(runtime_state.get("auto_leverage_enabled", True))
+    target_risk_pct = float(runtime_state.get("target_risk_pct", 0.35))
+    min_leverage = float(runtime_state.get("min_leverage", 1.0))
+    max_leverage = float(runtime_state.get("max_leverage", 3.0))
+    position_size_btc = float(runtime_state.get("position_size_btc", 0.01))
+    cooldown_candles = int(runtime_state.get("cooldown_candles", 2))
+
     worker_position_status = runtime_state["position_status"]
     worker_last_signal = runtime_state["last_signal"]
     worker_entry_price = runtime_state["entry_price"]
@@ -558,8 +724,11 @@ def render_autotrader_status(overview):
     worker_last_final_signal = runtime_state.get("worker_last_final_signal")
     worker_last_action = runtime_state.get("worker_last_action")
     worker_last_exit_reason = runtime_state.get("worker_last_exit_reason")
+    active_trade_side = runtime_state.get("active_trade_side")
     active_trade_stop_loss = runtime_state.get("active_trade_stop_loss")
     active_trade_take_profit = runtime_state.get("active_trade_take_profit")
+    active_trade_rr_ratio = runtime_state.get("active_trade_rr_ratio")
+    active_trade_leverage = runtime_state.get("active_trade_leverage")
 
     row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
     row1_col1.metric("Autotrader", "AN" if bot_enabled else "AUS")
@@ -608,6 +777,24 @@ def render_autotrader_status(overview):
         "Take Profit",
         "-" if active_trade_take_profit is None else f"{float(active_trade_take_profit):.2f}"
     )
+
+    row4_col1, row4_col2, row4_col3, row4_col4 = st.columns(4)
+    row4_col1.metric("Reward Multiple", f"{reward_multiple:.2f}R")
+    row4_col2.metric("Aktiver Hebel", "-" if active_trade_leverage is None else f"{float(active_trade_leverage):.2f}x")
+    row4_col3.metric("Positionsgröße", f"{position_size_btc:.4f} BTC")
+    row4_col4.metric(
+        "Aktive Side",
+        "-" if active_trade_side is None else str(active_trade_side)
+    )
+
+    row5_col1, row5_col2, row5_col3, row5_col4 = st.columns(4)
+    row5_col1.metric("Auto-Leverage", "AN" if auto_leverage_enabled else "AUS")
+    row5_col2.metric("Zielrisiko", f"{target_risk_pct:.2f}%")
+    row5_col3.metric("Hebel-Range", f"{min_leverage:.1f}x - {max_leverage:.1f}x")
+    row5_col4.metric("Cooldown", f"{cooldown_candles} Candles")
+
+    if active_trade_rr_ratio is not None:
+        st.write(f"Aktuelles Chance-Risiko-Verhältnis: **{float(active_trade_rr_ratio):.2f}**")
 
     if worker_last_trade_timestamp is not None:
         st.write(f"Letzter Auto-Trade: **{worker_last_trade_timestamp}**")
@@ -771,14 +958,14 @@ with st.sidebar:
     bar = st.selectbox(
         "Timeframe",
         ["1m", "5m", "15m", "1H", "4H", "1D"],
-        index=3
+        index=0
     )
 
     candle_limit = st.slider(
         "Anzahl Candles",
         min_value=5,
         max_value=120,
-        value=24,
+        value=120,
         step=1
     )
 
@@ -790,7 +977,7 @@ with st.sidebar:
         "Refresh alle Sekunden",
         min_value=5,
         max_value=60,
-        value=10,
+        value=5,
         step=5,
         disabled=not live_mode,
     )
@@ -804,19 +991,130 @@ with st.sidebar:
         key="sidebar_autotrader_enabled"
     )
 
+    reward_multiple = st.number_input(
+        "Reward Multiple (R)",
+        min_value=1.0,
+        max_value=10.0,
+        value=float(sidebar_runtime_state.get("reward_multiple", 2.0)),
+        step=0.25,
+        key="sidebar_reward_multiple"
+    )
+
+    manual_leverage = st.number_input(
+        "Manueller Hebel",
+        min_value=1.0,
+        max_value=20.0,
+        value=float(sidebar_runtime_state.get("leverage", 1.0)),
+        step=0.5,
+        key="sidebar_leverage"
+    )
+
+    auto_leverage_enabled = st.toggle(
+        "Auto-Leverage",
+        value=bool(sidebar_runtime_state.get("auto_leverage_enabled", True)),
+        key="sidebar_auto_leverage_enabled"
+    )
+
+    target_risk_pct = st.number_input(
+        "Zielrisiko pro Trade (%)",
+        min_value=0.05,
+        max_value=5.00,
+        value=float(sidebar_runtime_state.get("target_risk_pct", 0.35)),
+        step=0.05,
+        disabled=not auto_leverage_enabled,
+        key="sidebar_target_risk_pct"
+    )
+
+    min_leverage = st.number_input(
+        "Min Hebel",
+        min_value=1.0,
+        max_value=20.0,
+        value=float(sidebar_runtime_state.get("min_leverage", 1.0)),
+        step=0.5,
+        disabled=not auto_leverage_enabled,
+        key="sidebar_min_leverage"
+    )
+
+    max_leverage = st.number_input(
+        "Max Hebel",
+        min_value=1.0,
+        max_value=20.0,
+        value=float(sidebar_runtime_state.get("max_leverage", 3.0)),
+        step=0.5,
+        disabled=not auto_leverage_enabled,
+        key="sidebar_max_leverage"
+    )
+
+    position_size_btc = st.number_input(
+        "Positionsgröße BTC",
+        min_value=0.0010,
+        max_value=1.0000,
+        value=float(sidebar_runtime_state.get("position_size_btc", 0.01)),
+        step=0.0010,
+        format="%.4f",
+        key="sidebar_position_size_btc"
+    )
+
+    cooldown_candles = st.number_input(
+        "Cooldown Candles",
+        min_value=0,
+        max_value=20,
+        value=int(sidebar_runtime_state.get("cooldown_candles", 2)),
+        step=1,
+        key="sidebar_cooldown_candles"
+    )
+
+    state_changed = False
+
     if autotrader_enabled != sidebar_runtime_state.get("bot_enabled", True):
         sidebar_runtime_state["bot_enabled"] = autotrader_enabled
+        state_changed = True
+
+    if float(reward_multiple) != float(sidebar_runtime_state.get("reward_multiple", 2.0)):
+        sidebar_runtime_state["reward_multiple"] = float(reward_multiple)
+        state_changed = True
+
+    if float(manual_leverage) != float(sidebar_runtime_state.get("leverage", 1.0)):
+        sidebar_runtime_state["leverage"] = float(manual_leverage)
+        state_changed = True
+
+    if bool(auto_leverage_enabled) != bool(sidebar_runtime_state.get("auto_leverage_enabled", True)):
+        sidebar_runtime_state["auto_leverage_enabled"] = bool(auto_leverage_enabled)
+        state_changed = True
+
+    if float(target_risk_pct) != float(sidebar_runtime_state.get("target_risk_pct", 0.35)):
+        sidebar_runtime_state["target_risk_pct"] = float(target_risk_pct)
+        state_changed = True
+
+    if float(min_leverage) != float(sidebar_runtime_state.get("min_leverage", 1.0)):
+        sidebar_runtime_state["min_leverage"] = float(min_leverage)
+        state_changed = True
+
+    if float(max_leverage) != float(sidebar_runtime_state.get("max_leverage", 3.0)):
+        sidebar_runtime_state["max_leverage"] = float(max_leverage)
+        state_changed = True
+
+    if float(position_size_btc) != float(sidebar_runtime_state.get("position_size_btc", 0.01)):
+        sidebar_runtime_state["position_size_btc"] = float(position_size_btc)
+        state_changed = True
+
+    if int(cooldown_candles) != int(sidebar_runtime_state.get("cooldown_candles", 2)):
+        sidebar_runtime_state["cooldown_candles"] = int(cooldown_candles)
+        state_changed = True
+
+    if state_changed:
         save_runtime_state(sidebar_runtime_state)
         sidebar_runtime_state = load_runtime_state()
 
-    st.caption("Der Worker muss weiter in einem separaten Terminal laufen.")
+    st.caption(
+        "Auto-Leverage nutzt Stop-Distanz und Zielrisiko. "
+        "Später kann hier zusätzlich KI-/News-/Fundamental-Logik einfließen."
+    )
 
 refresh_value = f"{refresh_seconds}s" if live_mode else None
 
 
 def load_current_overview():
-    # hier kapseln wir den Ladeaufruf,
-    # damit wir denselben Code für Button und Live-Refresh benutzen
     return load_market_overview(
         inst_id=instrument,
         bar=bar,
